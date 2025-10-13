@@ -31,6 +31,15 @@ class Model(object):
         self.rng = np.random.default_rng(seed=0)
 
         # TODO: Add custom initialization for your model here if necessary
+        self.gpr = GaussianProcessRegressor(
+            kernel=None, 
+            alpha=1e-10, 
+            optimizer='fmin_l_bfgs_b',
+            n_restarts_optimizer=0,
+            normalize_y=False, 
+            copy_X_train=True,
+            random_state=None
+        )
 
     # Don't change the name or the signature of this function
     def predict_pollution_concentration(self, test_coordinates: np.ndarray, test_area_flags: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -47,6 +56,8 @@ class Model(object):
         gp_mean = np.zeros(test_coordinates.shape[0], dtype=float)
         gp_std = np.zeros(test_coordinates.shape[0], dtype=float)
 
+        gp_mean, gp_std = self.gpr.predict(test_coordinates, return_std=True)
+
         # TODO: Use the GP posterior to form your predictions here
         predictions = gp_mean
 
@@ -62,7 +73,7 @@ class Model(object):
         """
 
         # TODO: Fit your model here
-        pass
+        self.gpr.fit(train_coordinates, train_targets)
 
 # You don't have to change this function
 def calculate_cost(ground_truth: np.ndarray, predictions: np.ndarray, area_flags: np.ndarray) -> float:
@@ -181,6 +192,11 @@ def get_city_area_data(train_x: np.ndarray, test_x: np.ndarray) -> typing.Tuple[
     test_area_flags = np.zeros((test_x.shape[0],), dtype=bool)
 
     #TODO: Extract the city_area information from the training and test features
+    train_coordinates = train_x[:, :1][::25]
+    train_area_flags = train_x[:, 2][::25]
+
+    test_coordinates = test_x[:, :1][::25]
+    test_area_flags = test_x[:, 2][::25]
 
     assert train_coordinates.shape[0] == train_area_flags.shape[0] and test_coordinates.shape[0] == test_area_flags.shape[0]
     assert train_coordinates.shape[1] == 2 and test_coordinates.shape[1] == 2
