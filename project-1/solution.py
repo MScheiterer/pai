@@ -29,21 +29,50 @@ class Model(object):
         We already provide a random number generator for reproducibility.
         """
         self.rng = np.random.default_rng(seed=0)
+        
+        self.ensemble = []
+        
 
-        kernel = ConstantKernel(1.0, (0.1, 100.0)) * RBF(
-                length_scale=[0.5, 0.5], 
-                length_scale_bounds=(0.01, 5.0)
-            ) + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-5, 10.0))
+        kernel_residential = (
+            ConstantKernel(1.0, (0.1, 100.0)) *
+            Matern(
+                length_scale=1.0, 
+                length_scale_bounds=(0.01, 5.0), 
+                nu=2.5
+            ) +
+            WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-5, 10.0))
+        )
 
-        self.gpr = GaussianProcessRegressor(
-        kernel=kernel,
-        alpha=1e-3,
-        n_restarts_optimizer=2,
-        random_state=0,
-        normalize_y=True,
-        optimizer='fmin_l_bfgs_b',
-)
+        self.gpr_residential = GaussianProcessRegressor(
+                kernel=kernel_residential,
+                alpha=1e-2,
+                n_restarts_optimizer=2,
+                random_state=0,
+                normalize_y=True,
+                optimizer='fmin_l_bfgs_b',
+            )  
+        
+        kernel_nonresidential = (
+            ConstantKernel(1.0, (0.1, 100.0)) *
+            Matern(
+                length_scale=1.0, 
+                length_scale_bounds=(0.01, 5.0), 
+                nu=2.5 
+            ) +
+            WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-5, 10.0))
+        )
 
+        self.gpr_nonresidential = GaussianProcessRegressor(
+                kernel=kernel_nonresidential,
+                alpha=1e-2,
+                n_restarts_optimizer=2,
+                random_state=0,
+                normalize_y=True,
+                optimizer='fmin_l_bfgs_b',
+            )  
+        
+        self.adjustment_factor = 1.6
+        
     def smart_sample(self, train_coordinates, train_targets, train_area_flags, 
                  n_total=400, residential_ratio=0.7):
         """
@@ -53,7 +82,7 @@ class Model(object):
         n_residential = int(n_total * residential_ratio)
         n_non_residential = n_total - n_residential
         
-        # Get indices for each area type - FIX: Convert to bool or use comparison
+        # Get indices for each area type
         residential_idx = np.where(train_area_flags == 1)[0]  # or train_area_flags.astype(bool)
         non_residential_idx = np.where(train_area_flags == 0)[0]  # or ~train_area_flags.astype(bool)
         
@@ -90,20 +119,37 @@ class Model(object):
             Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
             containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
         """
-
-        # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
-
-        # TODO: Use the GP posterior to form your predictions here
-
-        gp_mean, gp_std = self.gpr.predict(test_coordinates, return_std=True)
-
-        predictions = gp_mean.copy()
-
-        residential_mask = test_area_flags.astype(bool)
-    
-        predictions[residential_mask] += 1.5 * gp_std[residential_mask]
-
-
+        n_test = len(test_coordinates)
+        gp_mean = np.zeros(n_test)
+        gp_std = np.zeros(n_test)
+        predictions = np.zeros(n_test)
+        
+        # Separate test points by area type
+        residential_mask = (test_area_flags == 1)
+        nonresidential_mask = (test_area_flags == 0)
+        
+        # Predict residential areas with residential GP
+        if np.any(residential_mask):
+            X_res_test = test_coordinates[residential_mask]
+            mean_res, std_res = self.gpr_residential.predict(X_res_test, return_std=True)
+            
+            gp_mean[residential_mask] = mean_res
+            gp_std[residential_mask] = std_res
+            
+            # Apply asymmetric cost adjustment for residential
+            predictions[residential_mask] = mean_res + self.adjustment_factor * std_res
+        
+        # Predict non-residential areas with non-residential GP
+        if np.any(nonresidential_mask):
+            X_nonres_test = test_coordinates[nonresidential_mask]
+            mean_nonres, std_nonres = self.gpr_nonresidential.predict(X_nonres_test, return_std=True)
+            
+            gp_mean[nonresidential_mask] = mean_nonres
+            gp_std[nonresidential_mask] = std_nonres
+            
+            # No adjustment for non-residential (symmetric cost)
+            predictions[nonresidential_mask] = mean_nonres
+        
         return predictions, gp_mean, gp_std
 
     # Don't change the name or the signature of this function
@@ -114,16 +160,41 @@ class Model(object):
         :param train_targets: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
         :param train_area_flags: Binary variable denoting whether the 2D training point is in the residential area (1) or not (0)
         """
-
-        train_coordinates, train_targets, train_area_flags = self.smart_sample(
-        train_coordinates, train_targets, train_area_flags, 
-        n_total=2500,  # Experiment with 300-500
-        residential_ratio=0.7  # 70% from residential areas
-        )   
+        # Split data by area type
+        residential_mask = (train_area_flags == 1)
+        nonresidential_mask = (train_area_flags == 0)
+        
+        X_residential = train_coordinates[residential_mask]
+        y_residential = train_targets[residential_mask]
+        
+        X_nonresidential = train_coordinates[nonresidential_mask]
+        y_nonresidential = train_targets[nonresidential_mask]
+        
+        X_residential, y_residential, _ = self.smart_sample(
+            X_residential, y_residential, train_area_flags[residential_mask],
+            n_total=3000, residential_ratio=1.0
+        )
+        
+        X_nonresidential, y_nonresidential, _ = self.smart_sample(
+            X_nonresidential, y_nonresidential, train_area_flags[nonresidential_mask],
+            n_total=3000, residential_ratio=0.0
+        )
+        
+        print(f"Residential training points: {len(X_residential)}")
+        print(f"Non-residential training points: {len(X_nonresidential)}")
+        
+        # Train residential GP
+        print("\nTraining residential GP...")
+        self.gpr_residential.fit(X_residential, y_residential)
+        print(f"  Optimized kernel: {self.gpr_residential.kernel_}")
+        
+        # Train non-residential GP
+        print("\nTraining non-residential GP...")
+        self.gpr_nonresidential.fit(X_nonresidential, y_nonresidential)
+        print(f"  Optimized kernel: {self.gpr_nonresidential.kernel_}")
+        
+        print("\n=== Training Complete ===")
     
-        self.gpr.fit(train_coordinates, train_targets)
-        print(f"Trained on {len(train_targets)} samples")
-        print(f"Optimized kernel: {self.gpr.kernel_}")
 
 # You don't have to change this function
 def calculate_cost(ground_truth: np.ndarray, predictions: np.ndarray, area_flags: np.ndarray) -> float:
