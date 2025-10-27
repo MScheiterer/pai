@@ -185,7 +185,7 @@ class SWAInferenceHandler(object):
             # TODO(2): update full SWAG attributes for weight `name` using `copied_params` and `param`
             raise NotImplementedError("Update full SWAG statistics")
         
-        self.swag_num_updates += 1
+        self.num_swag_updates += 1
 
     def fit_swag_model(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -218,7 +218,7 @@ class SWAInferenceHandler(object):
         # TODO(1): Perform initialization for SWAG fitting
         self.swag_mean = self._create_weight_copy()
         self.swag_second_moment = self._create_weight_copy()
-        self.swag_num_updates = 0
+        self.num_swag_updates = 0
 
         self.network.train()
         with tqdm.trange(self.swag_training_epochs, desc="Running gradient descent for SWA") as pbar:
@@ -251,8 +251,8 @@ class SWAInferenceHandler(object):
 
                 # TODO(1): Implement periodic SWAG updates using the attributes defined in __init__
                 
-                swag_start_epoch = self.swag_training_epochs // 2
-                if  (epoch + 1) % self.swag_update_interval == 0:
+                swag_start_epoch = 5
+                if  epoch >= swag_start_epoch and (epoch + 1) % self.swag_update_interval == 0:
                     self.update_swag_statistics()
 
     def run_calibration(self, validation_data: torch.utils.data.Dataset) -> None:
@@ -267,11 +267,12 @@ class SWAInferenceHandler(object):
             return
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
-        self._calibration_threshold = 2.0 / 3.0
+        self._calibration_threshold = 0.73
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
         val_images, val_snow_labels, val_cloud_labels, val_labels = validation_data.tensors
+        
         assert val_images.size() == (140, 3, 60, 60)  # N x C x H x W
         assert val_labels.size() == (140,)
         assert val_snow_labels.size() == (140,)
