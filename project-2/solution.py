@@ -15,7 +15,7 @@ from matplotlib import pyplot as plt
 
 from util import paint_reliability_diagram, compute_cost, seed_setup, calculate_calibration_curve
 
-ENABLE_EXTENDED_ANALYSIS = False
+ENABLE_EXTENDED_ANALYSIS = True
 """
 Set `ENABLE_EXTENDED_ANALYSIS` to `True` in order to generate additional plots on validation data.
 """
@@ -113,7 +113,7 @@ class SWAInferenceHandler(object):
         model_dir: pathlib.Path,
         # TODO(1): change inference_mode to InferenceMode.SWAG_DIAGONAL
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
-        inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
+        inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
         # TODO(2): optionally add/tweak hyperparameters
         swag_training_epochs: int = 30,
         swag_lr: float = 0.045,
@@ -161,6 +161,11 @@ class SWAInferenceHandler(object):
         # Full SWAG
         # TODO(2): create attributes for SWAG-full
         #  Hint: check collections.deque
+        self.swag_covariance = {}
+        self.max_num_snapshots = 20  # K
+        for name, param in self.network.named_parameters():
+            self.swag_covariance[name] = collections.deque(maxlen=self.max_num_snapshots)
+
 
         # Calibration, prediction, and other attributes
         # TODO(2): create additional attributes, e.g., for calibration
@@ -182,8 +187,16 @@ class SWAInferenceHandler(object):
 
         # Full SWAG
         if self.inference_mode == InferenceMode.SWAG_FULL:
-            # TODO(2): update full SWAG attributes for weight `name` using `copied_params` and `param`
-            raise NotImplementedError("Update full SWAG statistics")
+            for name, param in self.network.named_parameters():
+                w = param.data.clone()
+                mean = self.swag_mean[name]
+
+                deviation = (w - mean).detach().clone()
+                self.swag_covariance[name].append(deviation)
+
+                # Keep only last k deviations
+                if len(self.swag_covariance[name]) > self.max_num_snapshots:
+                    self.swag_covariance[name].pop(0)
         
         self.num_swag_updates += 1
 
@@ -224,7 +237,6 @@ class SWAInferenceHandler(object):
         with tqdm.trange(self.swag_training_epochs, desc="Running gradient descent for SWA") as pbar:
             progress_dict = {}
             for epoch in pbar:
-                avg_loss = 0.0
                 avg_accuracy = 0.0
                 num_samples = 0
                 for batch_images, batch_snow_labels, batch_cloud_labels, batch_labels in loader:
@@ -346,10 +358,19 @@ class SWAInferenceHandler(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                raise NotImplementedError("Sample parameter for full SWAG")
-                sampled_weight += ...
+                D_list = list(self.swag_covariance[name])  # deque → list
+                if len(D_list) > 0:
+                    D = torch.stack(D_list, dim=0)
+                    K = D.shape[0]
+                    z_lowrank = torch.randn(K, dtype=param.dtype)
 
-            # Modify weight value in-place; directly changing self.network
+                    # Weighted combination of deviations
+                    lowrank_term = (D * z_lowrank.view(K, *([1] * (D.ndim - 1)))).sum(dim=0)
+                    lowrank_term /= math.sqrt(max(K - 1, 1))
+
+                    sampled_weight += lowrank_term
+
+            param.data.copy_(sampled_weight)
             param.data = sampled_weight
 
         # TODO(1): Don't forget to update batch normalization statistics using self._update_batchnorm_statistics()
