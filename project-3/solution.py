@@ -75,28 +75,34 @@ class BO_algo():
         # Optimize acquisition function
         x_opt = self.optimize_acquisition_function()
         x_opt_2d = np.array([[x_opt]])
-        
-        # Safety check: if predicted to be unsafe, find safest point with decent objective
+
+        # Predict constraint
         mu_v, sigma_v = self.gp_v.predict(x_opt_2d, return_std=True)
         mu_v = mu_v[0] + self.prior_mean_v
         
         # If upper confidence bound suggests unsafe, be more conservative
-        if mu_v + self.beta * sigma_v[0] > self.kappa:
+        if mu_v + self.beta * sigma_v > self.kappa:
             # Sample many points and find safe ones with good objective
-            x_sample = np.random.uniform(DOMAIN[0, 0], DOMAIN[0, 1], (100, 1))
+            x_sample = np.random.uniform(DOMAIN[0, 0], DOMAIN[0, 1], (200, 1))
             mu_v_sample, sigma_v_sample = self.gp_v.predict(x_sample, return_std=True)
             mu_v_sample = mu_v_sample + self.prior_mean_v
-            
+
             # Find points likely to be safe
-            safety_margin = mu_v_sample + 2.0 * sigma_v_sample
+            safety_margin = mu_v_sample + self.beta * sigma_v_sample #works better with margin same as the check condition
             safe_mask = safety_margin <= self.kappa
-            
+
             if np.any(safe_mask):
-                # Among safe points, pick the one with best objective prediction
-                mu_f_sample, _ = self.gp_f.predict(x_sample[safe_mask], return_std=True)
-                best_idx = np.argmax(mu_f_sample)
-                x_opt_2d = x_sample[safe_mask][best_idx:best_idx+1]
-        
+                # Choose point with best UCB objective among safe points
+                mu_f_sample, sigma_f_sample = self.gp_f.predict(x_sample[safe_mask], return_std=True)
+                gamma = 1.0  # UCB exploration parameter
+                ucb_values = mu_f_sample + gamma * sigma_f_sample
+                best_idx = np.argmax(ucb_values)
+                x_opt_2d = x_sample[safe_mask][best_idx:best_idx + 1]
+            else:
+                # fallback: safest point
+                min_idx = np.argmin(safety_margin)
+                x_opt_2d = x_sample[min_idx:min_idx + 1]
+
         return x_opt_2d
 
     def optimize_acquisition_function(self):
