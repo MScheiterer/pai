@@ -170,14 +170,17 @@ class BO_algo():
         # Use mu_v + beta*sigma_v <= kappa (more conservative)
         safe_threshold = self.kappa - self.beta * sigma_v
         pof = norm.cdf((safe_threshold - mu_v) / sigma_v)
-        
-        # Penalize points with high uncertainty in constraint
-        # This discourages exploration in uncertain regions
+
+        # UCB term to encourage exploration
+        gamma = 1.0
+        ucb = mu_f + gamma * sigma_f
+
+        # Penalize high constraint uncertainty
         uncertainty_penalty = np.exp(-sigma_v / 2.0)
-        
-        # Combined acquisition with stronger safety emphasis
-        af_value = ei * (pof ** 2) * uncertainty_penalty  # Square PoF for more conservative behavior
-        
+
+        # Combine EI, PoF, UCB, and uncertainty penalty
+        af_value = ei * (pof ** 2) * uncertainty_penalty + 0.5 * ucb  # weight 0.5 for UCB
+
         # Return scalar for single point
         if x.shape[0] == 1:
             return float(af_value[0])
