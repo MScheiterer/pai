@@ -31,8 +31,8 @@ class BO_algo():
         )
         self.gp_f = GaussianProcessRegressor(
             kernel=kernel_f, 
-            alpha=0.15**2,  # noise variance σ_f² = 0.15²
-            normalize_y=True,  # helps with numerical stability
+            alpha=0.15**2,  
+            normalize_y=True, 
             n_restarts_optimizer=10
         )
         
@@ -45,19 +45,20 @@ class BO_algo():
         kernel_v = C(np.sqrt(2), (1e-3, 1e3)) * (linear_kernel + matern_kernel)
         
         # Create GP with prior mean = 4
-        # sklearn doesn't directly support non-zero mean, so we shift data
         self.prior_mean_v = 4.0
         self.gp_v = GaussianProcessRegressor(
             kernel=kernel_v,
-            alpha=0.0001**2,  # noise variance σ_v² = 0.0001²
-            normalize_y=False,  # Don't normalize since we handle mean manually
+            alpha=0.0001**2,
+            normalize_y=False,  
             n_restarts_optimizer=10
         )
         
         self.kappa = SAFETY_THRESHOLD
         self.f_best = -np.inf
-        self.beta = 2.0  # Safety margin (conservative)
-
+        
+        # Lagrangian penalty parameter
+        self.lambda_penalty = 40.0  # 40 = 0.83, 50 = 0.815
+        
     def next_recommendation(self):
         """
         Recommend the next input to sample.
@@ -72,32 +73,8 @@ class BO_algo():
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
 
-        # Optimize acquisition function
         x_opt = self.optimize_acquisition_function()
-        x_opt_2d = np.array([[x_opt]])
-        
-        # Safety check: if predicted to be unsafe, find safest point with decent objective
-        mu_v, sigma_v = self.gp_v.predict(x_opt_2d, return_std=True)
-        mu_v = mu_v[0] + self.prior_mean_v
-        
-        # If upper confidence bound suggests unsafe, be more conservative
-        if mu_v + self.beta * sigma_v[0] > self.kappa:
-            # Sample many points and find safe ones with good objective
-            x_sample = np.random.uniform(DOMAIN[0, 0], DOMAIN[0, 1], (100, 1))
-            mu_v_sample, sigma_v_sample = self.gp_v.predict(x_sample, return_std=True)
-            mu_v_sample = mu_v_sample + self.prior_mean_v
-            
-            # Find points likely to be safe
-            safety_margin = mu_v_sample + 2.0 * sigma_v_sample
-            safe_mask = safety_margin <= self.kappa
-            
-            if np.any(safe_mask):
-                # Among safe points, pick the one with best objective prediction
-                mu_f_sample, _ = self.gp_f.predict(x_sample[safe_mask], return_std=True)
-                best_idx = np.argmax(mu_f_sample)
-                x_opt_2d = x_sample[safe_mask][best_idx:best_idx+1]
-        
-        return x_opt_2d
+        return np.array([[x_opt]])
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -149,28 +126,22 @@ class BO_algo():
         mu_v, sigma_v = self.gp_v.predict(x, return_std=True)
         mu_v = mu_v + self.prior_mean_v  # Add back prior mean
         
-        # Avoid division by zero
         sigma_f = np.maximum(sigma_f, 1e-9)
         sigma_v = np.maximum(sigma_v, 1e-9)
         
-        # Expected Improvement for objective
-        if self.f_best == -np.inf:
-            ei = mu_f
-        else:
-            z = (mu_f - self.f_best) / sigma_f
-            ei = (mu_f - self.f_best) * norm.cdf(z) + sigma_f * norm.pdf(z)
+        # Upper Confidence Bound for objective
+        kappa_exploration = 2  
+        ucb_f = mu_f + kappa_exploration * sigma_f
         
-        # Conservative Probability of Feasibility with safety margin
-        # Use mu_v + beta*sigma_v <= kappa (more conservative)
-        safe_threshold = self.kappa - self.beta * sigma_v
-        pof = norm.cdf((safe_threshold - mu_v) / sigma_v)
+        # Calculate expected constraint violation using closed form for gaussians
+        violation_amount = mu_v - self.kappa
+        z = violation_amount / sigma_v
         
-        # Penalize points with high uncertainty in constraint
-        # This discourages exploration in uncertain regions
-        uncertainty_penalty = np.exp(-sigma_v / 2.0)
+        expected_violation = violation_amount * norm.cdf(z) + sigma_v * norm.pdf(z)
+        expected_violation = np.maximum(expected_violation, 0)  
         
-        # Combined acquisition with stronger safety emphasis
-        af_value = ei * (pof ** 2) * uncertainty_penalty  # Square PoF for more conservative behavior
+        # Lagrangian relaxation
+        af_value = ucb_f - self.lambda_penalty * expected_violation
         
         # Return scalar for single point
         if x.shape[0] == 1:
@@ -195,7 +166,6 @@ class BO_algo():
         # Ensure x is always 2D array with shape (1, n_features)
         x = np.array(x).reshape(1, -1)
         
-        # Add to dataset
         if self.X_f.size == 0:
             self.X_f = x
         else:
@@ -210,11 +180,9 @@ class BO_algo():
         
         self.y_v = np.append(self.y_v, v)
         
-        # Fit GPs
         self.gp_f.fit(self.X_f, self.y_f)
         self.gp_v.fit(self.X_v, self.y_v - self.prior_mean_v)
         
-        # Update best safe objective value
         safe_indices = self.y_v <= self.kappa
         if np.any(safe_indices):
             self.f_best = np.max(self.y_f[safe_indices])
@@ -231,10 +199,6 @@ class BO_algo():
         # TODO: Return your predicted safe optimum of f.
         # Find all safe points
         safe_indices = self.y_v <= self.kappa
-        
-        if not np.any(safe_indices):
-            # Fallback: return middle of domain
-            return np.array([[DOMAIN[0, 0] + 0.5 * (DOMAIN[0, 1] - DOMAIN[0, 0])]])
         
         # Return the safe point with highest objective value
         safe_X = self.X_f[safe_indices]
