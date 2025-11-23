@@ -191,12 +191,8 @@ class SWAInferenceHandler(object):
         if self.inference_mode == InferenceMode.SWAG_FULL:
             # TODO(2): update full SWAG attributes for weight `name` using `copied_params` and `param`
             for name, param in copied_params.items():
-                # Calculate deviation from current mean
                 deviation = param - self.swag_mean[name]
-            
-                # Append to deque (automatically removes oldest if at maxlen)
                 self.swag_deviations[name].append(deviation.clone())
-                # .clone() is important to create a copy, not a reference
         
         self.num_swag_updates += 1
 
